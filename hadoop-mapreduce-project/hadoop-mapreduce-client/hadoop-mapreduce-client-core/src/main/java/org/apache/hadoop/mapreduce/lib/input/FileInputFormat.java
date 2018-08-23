@@ -141,7 +141,7 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
    * @return the number of bytes of the minimal split for this format
    */
   protected long getFormatMinSplitSize() {
-    return 1;
+    return 1; // 最小Split为1
   }
 
   /**
@@ -187,7 +187,8 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
    * @return the minimum number of bytes that can be in a split
    */
   public static long getMinSplitSize(JobContext job) {
-    return job.getConfiguration().getLong(SPLIT_MINSIZE, 1L);
+    // mapreduce.input.fileinputformat.split.minsize
+    return job.getConfiguration().getLong(SPLIT_MINSIZE, 1L); //返回用设置的SPLIT_MINSIZE，默认1
   }
 
   /**
@@ -206,8 +207,9 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
    * @return the maximum number of bytes a split can include
    */
   public static long getMaxSplitSize(JobContext context) {
+    // mapreduce.input.fileinputformat.split.maxsize
     return context.getConfiguration().getLong(SPLIT_MAXSIZE, 
-                                              Long.MAX_VALUE);
+                                              Long.MAX_VALUE); // 返回用设置的SPLIT_MAXSIZE，默认去Long.MAX_VALUE
   }
 
   /**
@@ -377,8 +379,8 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
    */
   public List<InputSplit> getSplits(JobContext job) throws IOException {
     Stopwatch sw = new Stopwatch().start();
-    long minSize = Math.max(getFormatMinSplitSize(), getMinSplitSize(job)); // 最小值配置SPLIT_MINSIZE，默认值为1
-    long maxSize = getMaxSplitSize(job); // 最大值配置SPLIT_MINSIZE，默认值Long.MAX_VALUE
+    long minSize = Math.max(getFormatMinSplitSize(), getMinSplitSize(job)); // 最小值配置mapred.min.split.size,，默认值为1
+    long maxSize = getMaxSplitSize(job); // 最大值配置mapred.max.split.size，默认值Long.MAX_VALUE
 
     // generate splits
     List<InputSplit> splits = new ArrayList<InputSplit>(); //存放获取的split对象
@@ -395,7 +397,7 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
           blkLocations = fs.getFileBlockLocations(file, 0, length); // 获取文件的block列表
         }
         if (isSplitable(job, path)) {
-          long blockSize = file.getBlockSize(); //block size
+          long blockSize = file.getBlockSize(); //block size, 设置dfs.blocksize
           /**
            * split分片的大小
            * Math.max(minSize, Math.min(maxSize, blockSize)
@@ -403,7 +405,7 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
            * 如果要比blockSize小，设置MaxSize比blockSize小
            * 默认情况split大小就是block大小
            * FileInputFotmat.setMaxInputSplitSize(job, size)
-           * conf.set("SPLIT_MINSIZE", size);
+           * conf.set("mapred.min.split.size", size);
            */
           long splitSize = computeSplitSize(blockSize, minSize, maxSize);
 

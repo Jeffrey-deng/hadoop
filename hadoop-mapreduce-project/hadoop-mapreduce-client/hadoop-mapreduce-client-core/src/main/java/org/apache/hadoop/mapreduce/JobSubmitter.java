@@ -194,7 +194,7 @@ class JobSubmitter {
       
       // Create the splits for the job
       LOG.debug("Creating splits at " + jtFs.makeQualified(submitJobDir));
-      int maps = writeSplits(job, submitJobDir);  //获取mapper数量==split数量，进入
+      int maps = writeSplits(job, submitJobDir);  //获取mapTask数量==split数量，进入
       conf.setInt(MRJobConfig.NUM_MAPS, maps); // 设置map数量
       LOG.info("number of splits:" + maps);
 
@@ -303,7 +303,7 @@ class JobSubmitter {
 
     /**
      * 根据配置反射得到InputFormat的实现类，
-     * 查看job.getInputFormatClass()，位置再JobContextImpl中，ctrl+alt+左键，进入
+     * 查看job.getInputFormatClass()，位置在JobContextImpl中，ctrl+alt+左键，进入
      */
     InputFormat<?, ?> input =
       ReflectionUtils.newInstance(job.getInputFormatClass(), conf);
@@ -312,7 +312,7 @@ class JobSubmitter {
     T[] array = (T[]) splits.toArray(new InputSplit[splits.size()]);
 
     // sort the splits into order based on size, so that the biggest go first
-    // 按大小排序split数组，因为这些split不单单的一个文件，而是输入目录中所有文件的split
+    // 按大小排序split数组，因为这些split不单单是一个文件的，而是输入目录中所有文件的split
     Arrays.sort(array, new SplitComparator());
     JobSplitWriter.createSplitFiles(jobSubmitDir, conf, 
         jobSubmitDir.getFileSystem(conf), array);

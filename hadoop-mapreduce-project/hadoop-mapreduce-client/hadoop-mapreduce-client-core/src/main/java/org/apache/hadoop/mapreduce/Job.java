@@ -1313,7 +1313,7 @@ public class Job extends JobContextImpl implements JobContext {
                                    ) throws IOException, InterruptedException,
                                             ClassNotFoundException {
     if (state == JobState.DEFINE) {
-      submit(); //提交任务
+      submit(); //提交任务，进入
     }
     if (verbose) { //是否打印日志
       monitorAndPrintJob();

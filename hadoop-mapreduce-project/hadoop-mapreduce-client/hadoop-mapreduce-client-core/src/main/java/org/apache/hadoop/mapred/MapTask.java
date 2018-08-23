@@ -702,8 +702,8 @@ public class MapTask extends Task {
                        TaskUmbilicalProtocol umbilical,
                        TaskReporter reporter
                        ) throws IOException, ClassNotFoundException {
-      collector = createSortingCollector(job, reporter); //创造一个排序的collector输出池，进入
-      partitions = jobContext.getNumReduceTasks(); // 得到partition的数量，与reduceTask数量配置相同（mapreduce.job.reduces），默认为1
+      collector = createSortingCollector(job, reporter); //创造一个排序的collector输出池(MapOutputBuffer)，进入
+      partitions = jobContext.getNumReduceTasks(); // 得到partition的数量，与reduceTask数量配置相同（mapreduce.job.reduces或job.setNumReduceTasks()），默认为1
       if (partitions > 1) {
         // 当partition数量大于1，就用户自己配置了时，反射获取用户配置的分区器，默认为HashPartitioner
         // job.setPartitionerClass();
@@ -722,6 +722,11 @@ public class MapTask extends Task {
 
     @Override
     public void write(K key, V value) throws IOException, InterruptedException {
+      /**
+       * 调用MapOutBuffer.collect()
+       * 顺便在写入buffer的时候就用分区器计算好了分区号
+       * collect(key, value, partitionId)
+       */
       collector.collect(key, value,
                         partitioner.getPartition(key, value, partitions));
     }
@@ -730,7 +735,7 @@ public class MapTask extends Task {
     public void close(TaskAttemptContext context
                       ) throws IOException,InterruptedException {
       try {
-        collector.flush();
+        collector.flush(); // 溢写剩下的
       } catch (ClassNotFoundException cnf) {
         throw new IOException("can't find class ", cnf);
       }
@@ -766,7 +771,7 @@ public class MapTask extends Task {
     LOG.info("Processing split: " + split);
 
     org.apache.hadoop.mapreduce.RecordReader<INKEY,INVALUE> input =
-      new NewTrackingRecordReader<INKEY,INVALUE>                 // 创建RecordReader，NewTrackingRecordReader为内部类
+      new NewTrackingRecordReader<INKEY,INVALUE>                 // 创建input: RecordReader，NewTrackingRecordReader为内部类
         (split, inputFormat, reporter, taskContext); // 里面默认调用TextInputFormat.createRecordReader(split, taskContext)创建LineRecordReader
     
     job.setBoolean(JobContext.SKIP_RECORDS, isSkipping());
@@ -786,22 +791,22 @@ public class MapTask extends Task {
       new MapContextImpl<INKEY, INVALUE, OUTKEY, OUTVALUE>(job, getTaskID(), 
           input, output, //传入了RecordReader(LineRecordReader)，RecordWriter(MapOutputCollector)
           committer, 
-          reporter, split); // 创建MapContext，实现类MapContextmpl
+          reporter, split); // 创建MapContext，实现类MapContextImpl，MapContextImpl是TaskInputOutputContextImpl的实现类
 
     org.apache.hadoop.mapreduce.Mapper<INKEY,INVALUE,OUTKEY,OUTVALUE>.Context 
         mapperContext = 
-          new WrappedMapper<INKEY, INVALUE, OUTKEY, OUTVALUE>().getMapContext(
-              mapContext); //mapperContext调用的MapContextImpl的方法
+          new WrappedMapper<INKEY, INVALUE, OUTKEY, OUTVALUE>().getMapContext( // 传入mapContext创建mapperContext
+              mapContext); //mapperContext调用的MapContextImpl的方法，// 用户mapper里调用context.write(k, v),执行的是WrappedMapper里的方法
 
     try {
       input.initialize(split, mapperContext); //调用LineRecordReader的initialize()初始化input，进入，里面细节多
       mapper.run(mapperContext); // 调用mapper的run方法，传入MapContext，进入
       mapPhase.complete(); // map进度完成
-      setPhase(TaskStatus.Phase.SORT);  //开始排序sort阶段
+      setPhase(TaskStatus.Phase.SORT);  //标记开始排序sort阶段
       statusUpdate(umbilical);
       input.close(); //关闭RecordReader
       input = null;
-      output.close(mapperContext);
+      output.close(mapperContext); //执行flush，溢写buffer中剩下的，并执行merge，进入
       output = null;
     } finally {
       closeQuietly(input);
@@ -1078,7 +1083,7 @@ public class MapTask extends Task {
       final Counters.Counter combineInputCounter =
         reporter.getCounter(TaskCounter.COMBINE_INPUT_RECORDS);
       // JobContextImpl.getCombinerClass()
-      // 获取combiner类，并设置combiner分组比较器
+      // 获取combiner类，并设置combiner分组比较器job.setCombinerKeyGroupingComparator()
       // 配置mapreduce.job.combine.class 或 job.setCombinerClass()
       // 默认没有，没有配置就不执行combiner
       combinerRunner = CombinerRunner.create(job, getTaskID(), 
@@ -1102,7 +1107,7 @@ public class MapTask extends Task {
       spillThread.setName("SpillThread");
       spillLock.lock();
       try {
-        spillThread.start();
+        spillThread.start(); // 启动溢写线程
         while (!spillThreadRunning) {
           spillDone.await();
         }
@@ -1388,7 +1393,7 @@ public class MapTask extends Task {
        * likely result in data loss or corruption.
        * @see #markRecord()
        */
-      protected void shiftBufferedKey() throws IOException {
+      protected void shiftBufferedKey() throws IOException { // 重新调整key的序列化位置，防止key被切割，这样就不方便对key排序
         // spillLock unnecessary; both kvend and kvindex are current
         int headbytelen = bufvoid - bufmark;
         bufvoid = bufmark;
@@ -1527,6 +1532,9 @@ public class MapTask extends Task {
       }
     }
 
+    /**
+     * 执行flush，溢写buffer中剩下的，并执行merge
+     */
     public void flush() throws IOException, ClassNotFoundException,
            InterruptedException {
       LOG.info("Starting flush of map output");
@@ -1554,7 +1562,7 @@ public class MapTask extends Task {
                    "); kvend = " + kvend + "(" + (kvend * 4) +
                    "); length = " + (distanceTo(kvend, kvstart,
                          kvmeta.capacity()) + 1) + "/" + maxRec);
-          sortAndSpill();
+          sortAndSpill(); //溢写剩下的
         }
       } catch (InterruptedException e) {
         throw new IOException("Interrupted while waiting for the writer", e);
@@ -1576,14 +1584,14 @@ public class MapTask extends Task {
       }
       // release sort buffer before the merge
       kvbuffer = null;
-      mergeParts();
+      mergeParts(); // 执行merge
       Path outputPath = mapOutputFile.getOutputFile();
       fileOutputByteCounter.increment(rfs.getFileStatus(outputPath).getLen());
     }
 
     public void close() { }
 
-    protected class SpillThread extends Thread {
+    protected class SpillThread extends Thread { // spill溢写线程
 
       @Override
       public void run() {
@@ -1597,7 +1605,7 @@ public class MapTask extends Task {
             }
             try {
               spillLock.unlock();
-              sortAndSpill();
+              sortAndSpill(); // 排序及溢写，进入
             } catch (Throwable t) {
               sortSpillException = t;
             } finally {
@@ -1646,6 +1654,7 @@ public class MapTask extends Task {
       spillReady.signal();
     }
 
+    // 排序及溢写，有combiner执行combine
     private void sortAndSpill() throws IOException, ClassNotFoundException,
                                        InterruptedException {
       //approximate the length of the output file to be the length of the
@@ -1665,18 +1674,18 @@ public class MapTask extends Task {
           (kvstart >= kvend
           ? kvstart
           : kvmeta.capacity() + kvstart) / NMETA;
-        sorter.sort(MapOutputBuffer.this, mstart, mend, reporter);
+        sorter.sort(MapOutputBuffer.this, mstart, mend, reporter); //排序
         int spindex = mstart;
         final IndexRecord rec = new IndexRecord();
         final InMemValBytes value = new InMemValBytes();
-        for (int i = 0; i < partitions; ++i) {
+        for (int i = 0; i < partitions; ++i) { //按分区溢写
           IFile.Writer<K, V> writer = null;
           try {
             long segmentStart = out.getPos();
             FSDataOutputStream partitionOut = CryptoUtils.wrapIfNecessary(job, out);
             writer = new Writer<K, V>(job, partitionOut, keyClass, valClass, codec,
                                       spilledRecordsCounter);
-            if (combinerRunner == null) {
+            if (combinerRunner == null) { //如果未设置combiner，直接溢写
               // spill directly
               DataInputBuffer key = new DataInputBuffer();
               while (spindex < mend &&
@@ -1691,7 +1700,7 @@ public class MapTask extends Task {
               }
             } else {
               int spstart = spindex;
-              while (spindex < mend &&
+              while (spindex < mend && // 取这个分区的数据
                   kvmeta.get(offsetFor(spindex % maxRec)
                             + PARTITION) == i) {
                 ++spindex;
@@ -1702,7 +1711,7 @@ public class MapTask extends Task {
                 combineCollector.setWriter(writer);
                 RawKeyValueIterator kvIter =
                   new MRResultIterator(spstart, spindex);
-                combinerRunner.combine(kvIter, combineCollector);
+                combinerRunner.combine(kvIter, combineCollector); //如果设置combiner了，则执行combine
               }
             }
 
@@ -1869,6 +1878,7 @@ public class MapTask extends Task {
       public void close() { }
     }
 
+    // 最后执行merge
     private void mergeParts() throws IOException, InterruptedException, 
                                      ClassNotFoundException {
       // get the approximate size of the final output/index files
@@ -1981,7 +1991,7 @@ public class MapTask extends Task {
                                spilledRecordsCounter);
           if (combinerRunner == null || numSpills < minSpillsForCombine) {
             Merger.writeFile(kvIter, writer, reporter, job);
-          } else {
+          } else { //如果设置了combiner且spill小文件，超过merge最小个数，执行combiner合并文件
             combineCollector.setWriter(writer);
             combinerRunner.combine(kvIter, combineCollector);
           }

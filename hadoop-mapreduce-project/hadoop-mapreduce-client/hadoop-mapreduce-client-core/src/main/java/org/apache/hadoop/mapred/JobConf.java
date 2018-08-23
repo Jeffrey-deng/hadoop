@@ -979,10 +979,14 @@ public class JobConf extends Configuration {
    * @see #setOutputValueGroupingComparator(Class) for details.
    */
   public RawComparator getOutputValueGroupingComparator() {
+    /**
+     * 用户设置的分组比较器
+     * mapreduce.job.output.group.comparator.class 或 job.setGroupingComparatorClass()
+     */
     Class<? extends RawComparator> theClass = getClass(
       JobContext.GROUP_COMPARATOR_CLASS, null, RawComparator.class);
-    if (theClass == null) {
-      return getOutputKeyComparator();
+    if (theClass == null) { // 没有设置分组比较器
+      return getOutputKeyComparator(); // 默认取用户设置的排序比较器，如没有，再取key的比较器
     }
     
     return ReflectionUtils.newInstance(theClass, this);

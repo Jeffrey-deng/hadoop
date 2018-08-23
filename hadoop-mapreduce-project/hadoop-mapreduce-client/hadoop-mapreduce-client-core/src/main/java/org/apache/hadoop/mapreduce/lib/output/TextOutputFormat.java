@@ -133,7 +133,7 @@ public class TextOutputFormat<K, V> extends FileOutputFormat<K, V> {
       return new LineRecordWriter<K, V>(fileOut, keyValueSeparator);
     } else {
       FSDataOutputStream fileOut = fs.create(file, false);
-      return new LineRecordWriter<K, V>(new DataOutputStream
+      return new LineRecordWriter<K, V>(new DataOutputStream //创建的是LineRecordWriter
                                         (codec.createOutputStream(fileOut)),
                                         keyValueSeparator);
     }

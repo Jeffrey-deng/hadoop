@@ -165,18 +165,24 @@ public class Reducer<KEYIN,VALUEIN,KEYOUT,VALUEOUT> {
    * control how the reduce task works.
    */
   public void run(Context context) throws IOException, InterruptedException {
-    setup(context);
+    setup(context); // setup
     try {
-      while (context.nextKey()) {
-        reduce(context.getCurrentKey(), context.getValues(), context);
+      // nextKey: 每一个组执行一个，因为已经排序的，所以每个组的数据连在一块
+      // 调用的是ReduceContextImpl.nextKey()，nextKey()调用nextKeyValue
+      while (context.nextKey()) { // 进入查看
+        // （这个组的key的引用, 这个组的value的迭代器， reduceContext）
+        //  组的value的迭代器在迭代的时候会更新CurrentKey，以确保reduce方法中key为每行的实际key
+        // 调用的是ReduceContextImpl.getValues, values.iterator().next()里调用的还是nextKeyValue
+        // 所以这个values并不是一个内存中的数据，而是每运行一次next()读取一行
+        reduce(context.getCurrentKey(), context.getValues(), context);  // 进入查看
         // If a back up store is used, reset it
         Iterator<VALUEIN> iter = context.getValues().iterator();
         if(iter instanceof ReduceContext.ValueIterator) {
-          ((ReduceContext.ValueIterator<VALUEIN>)iter).resetBackupStore();        
+          ((ReduceContext.ValueIterator<VALUEIN>)iter).resetBackupStore(); // 重置values的备份
         }
       }
     } finally {
-      cleanup(context);
+      cleanup(context); // cleanup
     }
   }
 }

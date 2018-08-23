@@ -109,7 +109,7 @@ public class WrappedMapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
     @Override
     public void write(KEYOUT key, VALUEOUT value) throws IOException,
         InterruptedException {
-      mapContext.write(key, value);
+      mapContext.write(key, value); // 用户mapper里调用context.write(k, v),执行的是此处方法，MapContextImpl是TaskInputOutputContextImpl的实现类
     }
 
     @Override

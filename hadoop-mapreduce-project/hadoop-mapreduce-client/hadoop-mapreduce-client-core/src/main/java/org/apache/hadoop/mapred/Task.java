@@ -1479,6 +1479,7 @@ abstract public class Task implements Writable, Configurable {
                                                               keyClass, 
                                                               valueClass);
 
+    // 包装 ReduceContextImpl 成 WrappedReducer.context
     org.apache.hadoop.mapreduce.Reducer<INKEY,INVALUE,OUTKEY,OUTVALUE>.Context 
         reducerContext = 
           new WrappedReducer<INKEY, INVALUE, OUTKEY, OUTVALUE>().getReducerContext(

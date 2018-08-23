@@ -177,7 +177,7 @@ public class JobContextImpl implements JobContext {
      * TextInputFormat继承自FileInputFormat
       */
     return (Class<? extends InputFormat<?,?>>) 
-      conf.getClass(INPUT_FORMAT_CLASS_ATTR, TextInputFormat.class);
+      conf.getClass(INPUT_FORMAT_CLASS_ATTR, TextInputFormat.class); // mapreduce.job.inputformat.class
   }
 
   /**

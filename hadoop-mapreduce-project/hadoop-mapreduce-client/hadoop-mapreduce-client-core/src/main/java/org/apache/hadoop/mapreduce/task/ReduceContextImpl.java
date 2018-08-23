@@ -60,17 +60,17 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
   private Counter inputValueCounter;
   private Counter inputKeyCounter;
   private RawComparator<KEYIN> comparator;
-  private KEYIN key;                                  // current key
-  private VALUEIN value;                              // current value
+  private KEYIN key;                                  // current key 下一行的key
+  private VALUEIN value;                              // current value  下一行的值
   private boolean firstValue = false;                 // first value in key
-  private boolean nextKeyIsSame = false;              // more w/ this key
-  private boolean hasMore;                            // more in file
+  private boolean nextKeyIsSame = false;              // more w/ this key 下一个key是不是还是一个组的
+  private boolean hasMore;                            // more in file 是否还有输入
   protected Progressable reporter;
   private Deserializer<KEYIN> keyDeserializer;
   private Deserializer<VALUEIN> valueDeserializer;
   private DataInputBuffer buffer = new DataInputBuffer();
   private BytesWritable currentRawKey = new BytesWritable();
-  private ValueIterable iterable = new ValueIterable();
+  private ValueIterable iterable = new ValueIterable(); // 一个组的values迭代器，既reduce方法中传入的values
   private boolean isMarked = false;
   private BackupStore<KEYIN,VALUEIN> backupStore;
   private final SerializationFactory serializationFactory;
@@ -99,9 +99,9 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
     this.comparator = comparator;
     this.serializationFactory = new SerializationFactory(conf);
     this.keyDeserializer = serializationFactory.getDeserializer(keyClass);
-    this.keyDeserializer.open(buffer);
+    this.keyDeserializer.open(buffer); // 这里传入的buffer
     this.valueDeserializer = serializationFactory.getDeserializer(valueClass);
-    this.valueDeserializer.open(buffer);
+    this.valueDeserializer.open(buffer); // 这里传入的buffer
     hasMore = input.next();
     this.keyClass = keyClass;
     this.valueClass = valueClass;
@@ -109,16 +109,26 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
     this.taskid = taskid;
   }
 
-  /** Start processing next unique key. */
+  /**
+   * Start processing next unique key.
+   * 返回是否有新的行, 新的行既新的组
+   * 因为：
+   *  1、因为已经排序的，所以每个组的数据连在一块，这里也说明分组比较器强依赖于排序比较器;
+   *  2、里面调用 nextKeyValue() 来判断是否有新行;
+   *  3、nextKeyIsSame（标记下一行是否同一个组）的更新则是在：用户在遍历values时更新;
+   *  4、当用户在reduce方法时未迭代完value时，此方法会清除掉这个组剩下的key;
+   */
   public boolean nextKey() throws IOException,InterruptedException {
+    // 这个循环是假设用户的reducer中未迭代完一个组的values的数据，这个迭代完（清除）这个组剩下的
+    // nextKeyIsSame默认值为false, 所以第一次不会运行
     while (hasMore && nextKeyIsSame) {
       nextKeyValue();
     }
-    if (hasMore) {
+    if (hasMore) {  // 如果还有输入
       if (inputKeyCounter != null) {
         inputKeyCounter.increment(1);
       }
-      return nextKeyValue();
+      return nextKeyValue(); // 返回是否有新行，而 是不是 一个组在用户执行迭代器时更新
     } else {
       return false;
     }
@@ -126,23 +136,33 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
 
   /**
    * Advance to the next key/value pair.
+   * 判断有没有新行
+   * 同时更新currentKey，currentValue引用的值
+   * 再更新firstValue：是否是一个新组
+   * 再更新nextKeyIsSame：下一行是否是同一个组的
    */
   @Override
   public boolean nextKeyValue() throws IOException, InterruptedException {
-    if (!hasMore) {
+    if (!hasMore) { // 没有新行返回false
       key = null;
       value = null;
       return false;
     }
-    firstValue = !nextKeyIsSame;
-    DataInputBuffer nextKey = input.getKey();
+    firstValue = !nextKeyIsSame; // 当nextKeyIsSame为false时，标记为新的一组
+    DataInputBuffer nextKey = input.getKey(); //从内存或磁盘中去到先前执行input.next()读取的一行的key
     currentRawKey.set(nextKey.getData(), nextKey.getPosition(), 
                       nextKey.getLength() - nextKey.getPosition());
-    buffer.reset(currentRawKey.getBytes(), 0, currentRawKey.getLength());
+    buffer.reset(currentRawKey.getBytes(), 0, currentRawKey.getLength()); // 添加序列化数据到buffer中
+    /**
+     * 反序列出key
+     * 这里只传入key有点奇怪，其实是：context初始化时keyDeserializer.open(buffer)传入了buffer，所以这是从buffer中反序列化出key
+     * keyDeserializer为用户设置的序列化器，默认为JavaSerializationDeserializer，还有AvroSerializer
+     */
     key = keyDeserializer.deserialize(key);
-    DataInputBuffer nextVal = input.getValue();
+    DataInputBuffer nextVal = input.getValue(); //从内存或磁盘中去到先前执行input.next()读取的一行的value
     buffer.reset(nextVal.getData(), nextVal.getPosition(), nextVal.getLength()
         - nextVal.getPosition());
+    // 反序列出value
     value = valueDeserializer.deserialize(value);
 
     currentKeyLength = nextKey.getLength() - nextKey.getPosition();
@@ -152,9 +172,10 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
       backupStore.write(nextKey, nextVal);
     }
 
-    hasMore = input.next();
-    if (hasMore) {
+    hasMore = input.next(); // 读取一行, 放心，这一行的数据可以通过下次运行时执行input.getKey()，input.getValue()得到
+    if (hasMore) { //如果还有一行
       nextKey = input.getKey();
+      // 通过设置的组比较器判断这个key是不是同一个组的
       nextKeyIsSame = comparator.compare(currentRawKey.getBytes(), 0, 
                                      currentRawKey.getLength(),
                                      nextKey.getData(),
@@ -162,10 +183,10 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
                                      nextKey.getLength() - nextKey.getPosition()
                                          ) == 0;
     } else {
-      nextKeyIsSame = false;
+      nextKeyIsSame = false; // 没有新行了，nextKeyIsSame赋值为false
     }
     inputValueCounter.increment(1);
-    return true;
+    return true;  // 有新行直接放回true
   }
 
   public KEYIN getCurrentKey() {
@@ -180,14 +201,15 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
   BackupStore<KEYIN,VALUEIN> getBackupStore() {
     return backupStore;
   }
-  
+
+  // 一个组的values迭代器，既reduce方法中传入的values
   protected class ValueIterator implements ReduceContext.ValueIterator<VALUEIN> {
 
     private boolean inReset = false;
     private boolean clearMarkFlag = false;
 
     @Override
-    public boolean hasNext() {
+    public boolean hasNext() {  // 判断这个组还有没有值
       try {
         if (inReset && backupStore.hasNext()) {
           return true;
@@ -196,14 +218,21 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
         e.printStackTrace();
         throw new RuntimeException("hasNext failed", e);
       }
-      return firstValue || nextKeyIsSame;
+      // 如果这是这个组的第一个值，firstValue的会在外部调用nextKey(), 然后nextKey()里调用nextKeyValue()时更新为true,
+      // 而nextKeyIsSame也是在调用nextKeyValue()时更新;
+      return firstValue || nextKeyIsSame; // 如果是这是一个新组或下一行也是这个组的，返回true
     }
 
+    /**
+     * // 得到这个组当前一行的key,value，注意currentKey也会更新
+     * 如果是firstValue，就直接返回currentValue，原因是在调用nextKey()时，执行了一次nextKeyValue()，已经更新了currentKey,currentValue;
+     * 如果不是，调用nextKeyValue()更新currentKey,currentValue，同时更新nextKeyIsSame;
+     */
     @Override
     public VALUEIN next() {
-      if (inReset) {
+      if (inReset) {  // 如果用户不是第一遍迭代
         try {
-          if (backupStore.hasNext()) {
+          if (backupStore.hasNext()) {  // 从backupStore中缓存的取
             backupStore.next();
             DataInputBuffer next = backupStore.nextValue();
             buffer.reset(next.getData(), next.getPosition(), next.getLength()
@@ -225,19 +254,19 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
       } 
 
       // if this is the first record, we don't need to advance
-      if (firstValue) {
+      if (firstValue) { // 如果是第一行，在执行context.nextKey时就保存了这一行的key, value，直接返回
         firstValue = false;
         return value;
       }
       // if this isn't the first record and the next key is different, they
       // can't advance it here.
-      if (!nextKeyIsSame) {
+      if (!nextKeyIsSame) { // 如果不是第一行，但是下一行不是这个组的话，报错
         throw new NoSuchElementException("iterate past last value");
       }
       // otherwise, go to the next key/value pair
       try {
-        nextKeyValue();
-        return value;
+        nextKeyValue(); // 调用nextKeyValue更新currentKey,currentValue
+        return value; // 返回currentValue
       } catch (IOException ie) {
         throw new RuntimeException("next value iterator failed", ie);
       } catch (InterruptedException ie) {
@@ -313,7 +342,7 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
      * another.
      * @throws IOException
      */
-    public void resetBackupStore() throws IOException {
+    public void resetBackupStore() throws IOException { // 重置values的备份
       if (getBackupStore() == null) {
         return;
       }
@@ -348,7 +377,7 @@ public class ReduceContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
   }
 
   protected class ValueIterable implements Iterable<VALUEIN> {
-    private ValueIterator iterator = new ValueIterator();
+    private ValueIterator iterator = new ValueIterator(); // 一个组的values迭代器，既reduce方法中传入的values
     @Override
     public Iterator<VALUEIN> iterator() {
       return iterator;

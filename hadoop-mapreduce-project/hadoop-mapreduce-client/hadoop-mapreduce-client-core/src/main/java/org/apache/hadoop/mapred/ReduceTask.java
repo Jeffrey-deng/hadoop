@@ -355,6 +355,7 @@ public class ReduceTask extends Task {
       (null != combinerClass) ? 
      new CombineOutputCollector(reduceCombineOutputCounter, reporter, conf) : null;
 
+    // mapreduce.job.reduce.shuffle.consumer.plugin.class
     Class<? extends ShuffleConsumerPlugin> clazz =
           job.getClass(MRConfig.SHUFFLE_CONSUMER_PLUGIN, Shuffle.class, ShuffleConsumerPlugin.class);
 					
@@ -373,21 +374,35 @@ public class ReduceTask extends Task {
                   mapOutputFile, localMapFiles);
     shuffleConsumerPlugin.init(shuffleContext);
 
+    /**
+     * 输入迭代器：
+     * shuffleConsumerPlugin实际就是yarn配置文件中配置的mapreduc的shuffle
+     * 反正里面的拉取数据，然后归并，返回一个迭代器
+     * 但是这个归并不是完全归并，而是一部分在内存，一部分在磁盘
+     * 只是在上面封装了一个迭代器
+     * 这样假如数据量很大话不会内存溢出
+     * （因为每个文件都是内部有序的所以可以这样包装）
+     */
     rIter = shuffleConsumerPlugin.run();
 
     // free up the data structures
     mapOutputFilesOnDisk.clear();
     
-    sortPhase.complete();                         // sort is complete
+    sortPhase.complete();                         // sort is complete 排序阶段结束
     setPhase(TaskStatus.Phase.REDUCE); 
     statusUpdate(umbilical);
-    Class keyClass = job.getMapOutputKeyClass();
-    Class valueClass = job.getMapOutputValueClass();
+    Class keyClass = job.getMapOutputKeyClass(); // 设置的 job.setMapOutputKeyClass()
+    Class valueClass = job.getMapOutputValueClass(); // 设置的 job.setMapOutputValueClass()
+    /**
+     * 取用户设置的分组比较器，
+     * 如果没有设置，取用户设置的排序比较器，
+     * 如没有，再取key的比较器
+     */
     RawComparator comparator = job.getOutputValueGroupingComparator();
 
     if (useNewApi) {
       runNewReducer(job, umbilical, reporter, rIter, comparator, 
-                    keyClass, valueClass);
+                    keyClass, valueClass); // 进入
     } else {
       runOldReducer(job, umbilical, reporter, rIter, comparator, 
                     keyClass, valueClass);
@@ -538,7 +553,7 @@ public class ReduceTask extends Task {
 
       long bytesOutPrev = getOutputBytes(fsStats);
       this.real = (org.apache.hadoop.mapreduce.RecordWriter<K, V>) reduce.outputFormat
-          .getRecordWriter(taskContext);
+          .getRecordWriter(taskContext); // TextOutputFormat中构建的LineRecordWriter
       long bytesOutCurr = getOutputBytes(fsStats);
       fileOutputByteCounter.increment(bytesOutCurr - bytesOutPrev);
     }
@@ -571,6 +586,14 @@ public class ReduceTask extends Task {
     }
   }
 
+  /**
+   *  设置输入：rIter{RawKeyValueIterator}
+   *  设置输出：RecordWriter{LineRecordWriter}
+   *  创建任务上下文：taskContext{taskContext}
+   *  创建用户的reducer：reducer
+   *  创建reducer上下文：reducerContext{Reducer.Context}
+   *  调用用户reducer的run方法：reducer.run(reducerContext);
+   */
   @SuppressWarnings("unchecked")
   private <INKEY,INVALUE,OUTKEY,OUTVALUE>
   void runNewReducer(JobConf job,
@@ -584,7 +607,7 @@ public class ReduceTask extends Task {
                               ClassNotFoundException {
     // wrap value iterator to report progress.
     final RawKeyValueIterator rawIter = rIter;
-    rIter = new RawKeyValueIterator() {
+    rIter = new RawKeyValueIterator() { // 包装了一下迭代器
       public void close() throws IOException {
         rawIter.close();
       }
@@ -599,23 +622,28 @@ public class ReduceTask extends Task {
       }
       public boolean next() throws IOException {
         boolean ret = rawIter.next();
-        reporter.setProgress(rawIter.getProgress().getProgress());
+        reporter.setProgress(rawIter.getProgress().getProgress()); // 此处不同
         return ret;
       }
     };
     // make a task context so we can get the classes
-    org.apache.hadoop.mapreduce.TaskAttemptContext taskContext =
+    org.apache.hadoop.mapreduce.TaskAttemptContext taskContext = //创建task任务的context
       new org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl(job,
           getTaskID(), reporter);
     // make a reducer
-    org.apache.hadoop.mapreduce.Reducer<INKEY,INVALUE,OUTKEY,OUTVALUE> reducer =
+    org.apache.hadoop.mapreduce.Reducer<INKEY,INVALUE,OUTKEY,OUTVALUE> reducer = //从context中反射得到 用户编写的Reducer
       (org.apache.hadoop.mapreduce.Reducer<INKEY,INVALUE,OUTKEY,OUTVALUE>)
         ReflectionUtils.newInstance(taskContext.getReducerClass(), job);
-    org.apache.hadoop.mapreduce.RecordWriter<OUTKEY,OUTVALUE> trackedRW = 
+    org.apache.hadoop.mapreduce.RecordWriter<OUTKEY,OUTVALUE> trackedRW = // 创建输出 RecordWriter， TextOutputFormat中构建的LineRecordWriter
       new NewTrackingRecordWriter<OUTKEY, OUTVALUE>(this, taskContext);
     job.setBoolean("mapred.skip.on", isSkipping());
     job.setBoolean(JobContext.SKIP_RECORDS, isSkipping());
-    org.apache.hadoop.mapreduce.Reducer.Context 
+    /**
+     *  创建用户编写的Reducer中的context
+     *  reducerContext: 对象为WrappedReducer.context
+     *  WrappedReducer.context包装的是ReduceContextImpl
+     */
+    org.apache.hadoop.mapreduce.Reducer.Context
          reducerContext = createReduceContext(reducer, job, getTaskID(),
                                                rIter, reduceInputKeyCounter, 
                                                reduceInputValueCounter, 
@@ -624,7 +652,7 @@ public class ReduceTask extends Task {
                                                reporter, comparator, keyClass,
                                                valueClass);
     try {
-      reducer.run(reducerContext);
+      reducer.run(reducerContext); // 执行用户编写的Reducer中的run, 启动reduce，进入
     } finally {
       trackedRW.close(reducerContext);
     }

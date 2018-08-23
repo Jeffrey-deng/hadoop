@@ -86,6 +86,11 @@ public abstract class TaskInputOutputContextImpl<KEYIN,VALUEIN,KEYOUT,VALUEOUT>
    */
   public void write(KEYOUT key, VALUEOUT value
                     ) throws IOException, InterruptedException {
+    /**
+     * 调用的是RecordWriter，而RecordWriter的实现对象为NewOutputCollector
+     * NewOutputCollector里面是实例化了一个MapOutBuffer
+     * 实际中调用的是MapOutBuffer.collect()
+     */
     output.write(key, value);
   }
 
